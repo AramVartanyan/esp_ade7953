@@ -1,6 +1,6 @@
 /*
 
-ADE7953 energy metering IC driver. Version 2.0.
+ADE7953 energy metering IC driver. Version 2.4.
 
 Dual-SDK: works under both esp-open-rtos (ESP8266) and the ESP-IDF family
 (ESP-IDF v5.x for ESP32, and ESP8266_RTOS_SDK). The register/protocol logic is
@@ -34,7 +34,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <stdbool.h>
 
 /* Library version. */
-#define ESP_ADE7953_VERSION "2.0"
+#define ESP_ADE7953_VERSION "2.4"
 
 #ifdef __cplusplus
 extern "C"
@@ -47,19 +47,18 @@ extern "C"
  * from the chip — see ade7953_get_apower_sign(). The gen3/gen4 2PM entries
  * assume the same (direct) mapping as the Plus 2PM; verify if it differs.
  *
- * HARDWARE NOTE: the "direct" mapping for SHELLY_PLUS_2PM was taken from the
- * ESPHome device data. On a real Shelly Plus 2PM PCB v0.1.5, however, the
- * channels were measured to be SWAPPED — i.e. wired like the old Shelly 2.5
- * (relay 1 / O1 -> chip channel B, relay 2 / O2 -> chip channel A). It may have
- * changed on the newer v0.1.9 (unverified). Until confirmed, firmware for the
- * v0.1.5 board should select ADE7953_MODEL_SHELLY_25 to get the correct
- * channel↔relay mapping, even though the device is a 2PM. */
+ * HARDWARE NOTE: the Shelly Plus 2PM has two PCB revisions. v0.1.5 was measured
+ * with its channels SWAPPED — wired like the old Shelly 2.5 (relay 1 / O1 ->
+ * chip channel B, relay 2 / O2 -> chip channel A); use _V015 (same swap as the
+ * 2.5, but its own calibration). v0.1.9's mapping is UNVERIFIED — _V019 uses the
+ * ESPHome "direct" mapping as a placeholder until confirmed on hardware. */
 typedef enum {
-    ADE7953_MODEL_SHELLY_25 = 0,      // channels A/B swapped vs the others
-    ADE7953_MODEL_SHELLY_PLUS_2PM,    // current development target
+    ADE7953_MODEL_SHELLY_25 = 0,           // channels A/B swapped vs the others
+    ADE7953_MODEL_SHELLY_PLUS_2PM_V015,    // Plus 2PM PCB v0.1.5: swapped, like the 2.5
+    ADE7953_MODEL_SHELLY_PLUS_2PM_V019,    // Plus 2PM PCB v0.1.9: direct mapping (UNVERIFIED)
     ADE7953_MODEL_SHELLY_2PM_GEN3,
     ADE7953_MODEL_SHELLY_2PM_GEN4,
-    ADE7953_MODEL_SHELLY_EM,          // net-metering (signed power direction)
+    ADE7953_MODEL_SHELLY_EM,               // net-metering (signed power direction)
 } ade7953_model_t;
 
 /* PGA (programmable gain amplifier) settings for the voltage and current
@@ -88,7 +87,9 @@ typedef struct {
     int32_t ia_offset;            // AIRMSOS (0x386) register value, signed
     int32_t ib_offset;            // BIRMSOS (0x392) register value, signed
     uint16_t current_ref;         // IREF override for ade7953_getcurrent() scaling
-                                  // (raw -> A x100); 0 = keep the library default
+                                  // (raw -> A x100); 0 = use the per-model default
+    uint16_t voltage_ref;         // UREF override for ade7953_getvoltage() scaling
+                                  // (raw -> V x100); 0 = use the per-model default
 } ade7953_config_t;
 
 /* Setup the ADE7953's address and required registers. Call first!

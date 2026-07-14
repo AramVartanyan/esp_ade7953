@@ -1,6 +1,6 @@
 /*
 
-ADE7953 energy metering IC driver — SDK-independent core. Version 2.0.
+ADE7953 energy metering IC driver — SDK-independent core. Version 2.4.
 
 Supports several Shelly hardware variants (channel mapping differs per board),
 the chip's hardware no-load detection, and magnitude-based power readings that
@@ -95,6 +95,12 @@ static const uint16_t ADE7953_R_PF[2]     = { 0x10A, 0x10B }; // power factor  A
 #define ADE7953_PREF   1540    //1540 (0,066W)
 #define ADE7953_UREF   0x10B   //0x10B, 267 (Vx100)
 #define ADE7953_IREF   0xAAA   //(0x181, 385) 2730 (Ax1000)
+/* No-load cutoff for getcurrent(), in CALIBRATED units (A x100): idle IRMS noise
+ * below this reads as exactly 0. Keep it SMALL vs any real load. (The former 75
+ * lived in the pre-calibration inflated scale — once IREF was calibrated it
+ * zeroed real currents, e.g. 730 mA -> 72 < 75. See getcurrent.) 2 = ~20 mA:
+ * just above the measured reading noise (~+/-3 mA p-p) and the old ~16 mA cutoff. */
+#define ADE7953_NO_LOAD_AX100  2
 
 /* Period register clock: 223.75 kHz (datasheet, Period Measurement). */
 #define ADE7953_PERIOD_CLK_HZ  223750UL
@@ -108,9 +114,25 @@ static const uint16_t ADE7953_R_PF[2]     = { 0x10A, 0x10B }; // power factor  A
 
 static ade7953_model_t s_model = ADE7953_MODEL_SHELLY_25;
 
-/* Current scaling reference for ade7953_getcurrent() (raw -> A x100).
- * Overridable at init via ade7953_config_t.current_ref. */
+/* Active scaling references for getcurrent()/getvoltage() (raw -> A x100 / V x100).
+ * Set at init from the per-model table below, or overridden via
+ * ade7953_config_t.current_ref / .voltage_ref. */
 static uint16_t s_iref = ADE7953_IREF;
+static uint16_t s_uref = ADE7953_UREF;
+
+/* Per-model calibration references, found by the calibration procedure (known
+ * load / known mains voltage, read back over HomeKit). The application selects
+ * ONLY the hardware model (ade7953_init's `model`); the matching iref/uref are
+ * applied automatically. A non-zero cfg->current_ref / cfg->voltage_ref still
+ * overrides (e.g. during a calibration run). */
+static const struct { uint16_t iref; uint16_t uref; } s_model_cal[] = {
+    [ADE7953_MODEL_SHELLY_25]       = { 60,   240 },  /* I & U calibrated on unit 1, 2026-07-15 */
+    [ADE7953_MODEL_SHELLY_PLUS_2PM_V015] = { 2730, 267 },  /* v0.1.5 TODO (channels like 2.5) */
+    [ADE7953_MODEL_SHELLY_PLUS_2PM_V019] = { 2730, 267 },  /* v0.1.9 TODO (mapping unverified) */
+    [ADE7953_MODEL_SHELLY_2PM_GEN3] = { 2730, 267 },  /* TODO */
+    [ADE7953_MODEL_SHELLY_2PM_GEN4] = { 2730, 267 },  /* TODO */
+    [ADE7953_MODEL_SHELLY_EM]       = { 2730, 267 },  /* TODO */
+};
 
 /* Cached, abs() active power magnitude. Refreshed by ade7953getdata(). */
 static uint32_t ade7953_active_power1 = 0;
@@ -165,14 +187,14 @@ static bool ade7953write(uint16_t reg_a, uint32_t data) {
 
 /* Map a logical channel (1 or 2) to the ADE channel index (0 = A, 1 = B).
  * Shelly 2.5 has its two current sensors wired to the opposite ADE channels
- * compared to the 2PM / EM / Pro family, so 2.5 is swapped.
- * HARDWARE NOTE: a real Shelly Plus 2PM PCB v0.1.5 was measured to be wired the
- * SAME (swapped) way as the 2.5, contrary to the ESPHome data — so its firmware
- * selects ADE7953_MODEL_SHELLY_25. See the model enum in ade7953.h. */
+ * compared to the 2PM / EM / Pro family, so 2.5 is swapped. The Shelly Plus 2PM
+ * PCB v0.1.5 was measured to be wired the SAME (swapped) way as the 2.5, so
+ * _V015 swaps too. v0.1.9 (_V019) mapping is unverified (left direct). */
 static int ade7953_ade_channel(uint8_t channel) {
     int is_b = (channel == 2);                 // direct: ch1 -> A, ch2 -> B
-    if (s_model == ADE7953_MODEL_SHELLY_25) {
-        is_b = !is_b;                          // 2.5: ch1 -> B, ch2 -> A
+    if (s_model == ADE7953_MODEL_SHELLY_25 ||
+        s_model == ADE7953_MODEL_SHELLY_PLUS_2PM_V015) {
+        is_b = !is_b;                          // 2.5 & Plus 2PM v0.1.5: ch1 -> B, ch2 -> A
     }
     return is_b ? 1 : 0;
 }
@@ -184,7 +206,13 @@ static uint32_t ade7953_abs32(int32_t v) {
 
 bool ade7953_init(uint8_t bus, uint8_t addr, ade7953_model_t model, const ade7953_config_t *cfg) {
     s_model = model;
-    s_iref = (cfg && cfg->current_ref) ? cfg->current_ref : ADE7953_IREF;
+    {   /* Per-model calibration; a non-zero cfg override wins. */
+        int n  = (int)(sizeof(s_model_cal) / sizeof(s_model_cal[0]));
+        int mi = ((int)model >= 0 && (int)model < n) ? (int)model
+                                                     : (int)ADE7953_MODEL_SHELLY_25;
+        s_iref = (cfg && cfg->current_ref) ? cfg->current_ref : s_model_cal[mi].iref;
+        s_uref = (cfg && cfg->voltage_ref) ? cfg->voltage_ref : s_model_cal[mi].uref;
+    }
 
     if (!ade7953_i2c_setup(bus, addr)) {
         ADE_LOGE("I2C device setup failed");
@@ -265,14 +293,14 @@ void ade7953getdata(void) {
 
 uint16_t ade7953_getvoltage(void) {
     uint32_t voltage_rms_readout = ade7953read(ADE7953_U_RMS);
-    return (uint16_t)((voltage_rms_readout * ADE7953_UREF) >> 16);
+    return (uint16_t)((voltage_rms_readout * s_uref) >> 16);
 }
 
 uint16_t ade7953_getcurrent(uint8_t channel) {
     if (channel < 1 || channel > 2) return 0;
     int ch = ade7953_ade_channel(channel);
     uint16_t c_rms_return = (uint16_t)(((ade7953read(ADE7953_R_IRMS[ch]) * s_iref) & 0xFFFF0000) >> 16);
-    if (c_rms_return < 75) {   // No-load threshold: report exactly 0 when idle
+    if (c_rms_return < ADE7953_NO_LOAD_AX100) {   // no-load: report exactly 0 when idle
         c_rms_return = 0;
     }
     return c_rms_return;
