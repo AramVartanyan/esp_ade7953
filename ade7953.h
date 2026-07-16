@@ -1,6 +1,6 @@
 /*
 
-ADE7953 energy metering IC driver. Version 2.4.
+ADE7953 energy metering IC driver. Version 2.5.
 
 Dual-SDK: works under both esp-open-rtos (ESP8266) and the ESP-IDF family
 (ESP-IDF v5.x for ESP32, and ESP8266_RTOS_SDK). The register/protocol logic is

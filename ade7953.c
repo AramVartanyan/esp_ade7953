@@ -1,6 +1,6 @@
 /*
 
-ADE7953 energy metering IC driver — SDK-independent core. Version 2.4.
+ADE7953 energy metering IC driver — SDK-independent core. Version 2.5.
 
 Supports several Shelly hardware variants (channel mapping differs per board),
 the chip's hardware no-load detection, and magnitude-based power readings that

@@ -1,4 +1,4 @@
-# esp_ade7953 — v2.4
+# esp_ade7953 — v2.5
 
 Driver for the **ADE7953** single-phase energy metering IC (voltage, current,
 active power and energy over I²C).
