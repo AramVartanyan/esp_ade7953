@@ -185,6 +185,18 @@ static bool ade7953write(uint16_t reg_a, uint32_t data) {
     return ok;
 }
 
+/* Issue the software reset WITHOUT going through ade7953write's error path: the
+ * chip resets immediately and NAKs this write, so the "failure" is EXPECTED — it
+ * must not be logged as an error (that looked like a real fault and misled a
+ * diagnosis). We log a plain informational line instead; the reset is confirmed
+ * via the IRQSTATA RST flag afterwards. */
+static void ade7953_software_reset(void) {
+    uint8_t byte[2] = { 0x00, (uint8_t)ADE7953_CONFIG_SWRST };  // CONFIG is 16-bit; SWRST in low byte
+    ADE_LOGI("software reset");
+    (void)ade7953_i2c_write_reg(ADE7953_CONFIG, byte, 2);
+    ADE_SETTLE();
+}
+
 /* Map a logical channel (1 or 2) to the ADE channel index (0 = A, 1 = B).
  * Shelly 2.5 has its two current sensors wired to the opposite ADE channels
  * compared to the 2PM / EM / Pro family, so 2.5 is swapped. The Shelly Plus 2PM
@@ -230,10 +242,8 @@ bool ade7953_init(uint8_t bus, uint8_t addr, ade7953_model_t model, const ade795
     }
     ADE_LOGI("ADE7953 silicon version 0x%02X, model %d", (unsigned)version, (int)model);
 
-    /* Software reset, then wait for the reset-complete flag in IRQSTATA. The
-     * SWRST write is not acknowledged (the chip resets immediately), so its
-     * return value is ignored. */
-    ade7953write(ADE7953_CONFIG, ADE7953_CONFIG_SWRST);
+    /* Software reset, then wait for the reset-complete flag in IRQSTATA. */
+    ade7953_software_reset();
     ADE_DELAY_MS(10);
     bool reset_done = false;
     for (int i = 0; i < ADE7953_RESET_POLL_STEPS; i++) {

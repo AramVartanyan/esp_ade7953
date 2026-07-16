@@ -34,7 +34,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <stdbool.h>
 
 /* Library version. */
-#define ESP_ADE7953_VERSION "2.4"
+#define ESP_ADE7953_VERSION "2.5"
 
 #ifdef __cplusplus
 extern "C"
